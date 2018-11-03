@@ -28,6 +28,7 @@ class Lobby:
         self.maxCount = maxCount
         self.id = nextLobbyId
         self.host = user
+        user.lobbyID = self.id
         self.players = [user]
         nextLobbyId += 1
         self.packets = []
@@ -54,13 +55,27 @@ class SimpleChat(WebSocket):
                 users[data["name"]] = self.user
                 self.lobbylist()
         else:
-            print("Ah well")
             error("Give me a name plz")
-    def NewLobbyHandler(self, data):
-        pass
-    def CloseLobbyHandler(self, data):
-        pass
     def CreateLobbyHandler(self, data):
+        if "name" in data and "maxCount" in data \
+            and type(data["name"]) == str and type(data["maxCount"]) == int:
+            lobby = Lobby(self.user, data["name"], data["maxCount"])
+            lobbies.append(lobby)
+            for client in clients:
+                if client.user and client.user.lobbyID == None:
+                    client.sendMessage(json.dumps({
+                        "packetID": 3,
+                        "data": {
+                            "lobbyID": lobby.id,
+                            "lobbyName": lobby.name,
+                            "playerCount": len(lobby.players),
+                            "maxCount": lobby.maxCount
+                        }
+                    }))
+        else:
+            error("Something went wrong in lobby validation")
+        return False
+    def CloseLobbyHandler(self, data):
         pass
     def JoinLobbyHandler(self, data):
         pass
@@ -83,7 +98,19 @@ class SimpleChat(WebSocket):
         else:
             self.lobbylist()
     def lobbylist(self):
-        pass
+        result = [{
+            "lobbyID": lobby.id,
+            "lobbyName": lobby.name,
+            "playerCount": len(lobby.players),
+            "maxCount": lobby.maxCount
+        } for lobby in lobbies if lobby.ingame == False]
+        self.sendMessage(json.dumps({
+            "packetID": 2,
+            "data": {
+                "lobbies": result
+            }
+        }))
+            
     #Currently only used for chat
     def proxy(self):
         for client in clients:
@@ -108,28 +135,24 @@ class SimpleChat(WebSocket):
                 return self.error("No data object present")
             if not isinstance(data["data"], object):
                 return self.error("data isn't an object")
-            print("Valid raw packet")
             # packetID and data confirmed to exist
             packetID = data["packetID"]
             payload = data["data"]
-            print("wat")
             if not self.user:
-                print(packetID)
                 if packetID == 1:
                     self.LoginHandler(payload)
                 else:
                     error("Not logged in")
                 return
-            print("Logged in?")
             # TODO: Cleanup this mess
-            if self.user.lobbyID > -1:
+            if self.user.lobbyID:
                 lobby = lobbies[self.user.lobbyID]
                 if lobby.ingame:
                     if packetID in self.ingameHandlers.keys():
                         if self.ingameHandlers[packetID](payload):
                             lobby.packets.append(data)
                     else:
-                        error("Unknown pregame packet")
+                        error("Unknown ingame packet")
                 else:
                     if packetID in self.pregameHandlers.keys():
                         if self.pregameHandlers[packetID](payload):
@@ -138,10 +161,14 @@ class SimpleChat(WebSocket):
                         error("Unknown pregame packet")
             else:
                 if packetID in self.lobbyHandlers.keys():
-                    self.lobbyHandlers[packetID](payload)
+                    try:
+                        self.lobbyHandlers[packetID](self, payload)
+                    except:
+                        traceback.print_exc()
                 else:
                     error("Unknown lobby packet")
         except:
+            traceback.print_exc()
             error(traceback.format_exc)
 
     def handleConnected(self):
@@ -165,7 +192,6 @@ class SimpleChat(WebSocket):
             #    }
             #}))
     lobbyHandlers = {
-        3: NewLobbyHandler,
         5: CloseLobbyHandler,
         6: CreateLobbyHandler,
         7: JoinLobbyHandler
@@ -181,8 +207,5 @@ clients = []
 users = {}
 lobbies = []
 
-print("Am I alive")
-
 server = SimpleWebSocketServer('0.0.0.0', 8000, SimpleChat)
 server.serveforever()
-print("I died?")
