@@ -42,12 +42,38 @@ class SimpleChat(WebSocket):
                 "error": reason
             }
         }))
+    def broadcastLobby(self, lobby):
+        for client in clients:
+            if client.user and client.user.lobbyID == None:
+                client.sendMessage(json.dumps({
+                    "packetID": 3,
+                    "data": {
+                        "lobbyID": lobby.id,
+                        "lobbyName": lobby.name,
+                        "playerCount": len(lobby.players),
+                        "maxCount": lobby.maxCount
+                    }
+                }))
+    def sendLobby(self, lobby):
+        print(f"D: Sending lobby info to {self.user.name} for lobby {lobby.id}")
+        self.sendMessage(json.dumps({
+            "packetID": 8,
+            "data": {
+                "id": lobby.id,
+                "ingame": lobby.ingame, 
+                "name": lobby.name,
+                "maxCount": lobby.maxCount,
+                "host": lobby.host.name,
+                "players": [player.name for player in lobby.players]
+            }
+        }))
 
     def LoginHandler(self, data):
         global users
         if "name" in data and type(data["name"]) == str:
             if data["name"] in users:
                 self.user = users[data["name"]]
+                self.user.client = self
                 self.playback()
             else:
                 print("Registering new user")
@@ -55,44 +81,108 @@ class SimpleChat(WebSocket):
                 users[data["name"]] = self.user
                 self.lobbylist()
         else:
-            error("Give me a name plz")
+            self.error("Give me a name plz")
     def CreateLobbyHandler(self, data):
-        if "name" in data and "maxCount" in data \
-            and type(data["name"]) == str and type(data["maxCount"]) == int:
-            lobby = Lobby(self.user, data["name"], data["maxCount"])
-            lobbies.append(lobby)
-            for client in clients:
-                if client.user and client.user.lobbyID == None:
-                    client.sendMessage(json.dumps({
-                        "packetID": 3,
-                        "data": {
-                            "lobbyID": lobby.id,
-                            "lobbyName": lobby.name,
-                            "playerCount": len(lobby.players),
-                            "maxCount": lobby.maxCount
-                        }
-                    }))
+        if "lobbyName" in data and "maxCount" in data \
+            and type(data["lobbyName"]) == str and type(data["maxCount"]) == int:
+            lobby = Lobby(self.user, data["lobbyName"], data["maxCount"])
+            lobbies[lobby.id] = lobby
+            self.broadcastLobby(lobby)
+            self.sendLobby(lobby)
         else:
-            error("Something went wrong in lobby validation")
+            self.error("Something went wrong in lobby validation")
         return False
-    def CloseLobbyHandler(self, data):
-        pass
     def JoinLobbyHandler(self, data):
-        pass
+        if "lobbyID" in data and type(data["lobbyID"]) == int:
+            lobbyID = data["lobbyID"]
+            if lobbyID not in lobbies.keys():
+                self.error("Unknown lobbyID")
+            else:
+                lobby = lobbies[lobbyID]
+                if len(lobby.players) == lobby.maxCount:
+                    self.error("Full lobby")
+                    return False
+                lobby.players.append(self.user)
+                self.user.lobbyID = lobbyID
+                # Tell other clients they joined
+                for player in lobby.players:
+                    print(f"Telling user {player.name} that lobby {lobby.id} changed")
+                    player.client.sendLobby(lobby)
+                self.broadcastLobby(lobby)
+        else:
+            self.error("Invalid lobbyID")
+    
+    def LeaveLobbyHandler(self, data):
+        lobby = lobbies[self.user.lobbyID]
+        lobbyID = self.user.lobbyID      
+        if lobby.host == self.user and lobby.ingame == False:
+            # If the host has left the lobby during pregame, tell everyone its dead      
+            print(f"Host left the lobby {lobbyID}")
+            players = lobby.players
+            # Also nuke the lobby itself
+            del lobbies[lobbyID]
+
+            for player in players:
+                print(f"Kicking user: {player.name}")
+                player.lobbyID = None
+                player.client.sendMessage(json.dumps({
+                    "packetID": 4,
+                    "data": {
+                        "lobbyID": lobbyID
+                    }
+                }))
+                player.client.lobbylist()
+            print(f"D: All users kicked")
+            return False
+        print(f"{self.user.name} left the lobby {lobbyID}")
+        lobby.players.remove(self.user)
+        self.user.lobbyID = None
+        # Tell other clients they joined
+        for player in lobby.players:
+            print(f"Telling user {player.name} that lobby {lobby.id} changed")
+            player.client.sendLobby(lobby)
+        # Trick client into thinking it died
+        self.sendMessage(json.dumps({
+            "packetID": 4,
+            "data": {
+                "lobbyID": lobby.id
+            }
+        }))
+        self.lobbylist()
+        return False
+    def LobbyStartHandler(self, data):
+        lobby = lobbies[self.user.lobbyID]
+        if len(lobby.players) < 2:
+            self.error("Not enough players")
+            return False
+        if lobby.host != self.user:
+            self.error("Not host")
+            return False
+        lobby.ingame = True
+        for player in lobby.players:
+            print(f"Telling user {player.name} that lobby {lobby.id} went ingame")
+            player.client.sendLobby(lobby)
+        return False
+    def ChatHandler(self, data):
+        # TODO: Validate data
+        packet = {
+            "packetID": 0,
+            "data": {
+                "author": self.user.name,
+                "message": data["message"]
+            }
+        }
+        for client in clients:
+            client.sendMessage(json.dumps(packet))
+        lobby = lobbies[self.user.lobbyID]
+
+        # Manually appending due to mutating packet server side
+        lobby.packets.append(packet)
+        return False
     def playback(self):
         if self.user.lobbyID:
             lobby = lobbies[self.user.lobbyID]
-            self.sendMessage(json.dumps({
-                "packetID": 8,
-                "data": {
-                    "id": lobby.id,
-                    "ingame": lobby.ingame, 
-                    "name": lobby.name,
-                    "maxCount": lobby.maxCount,
-                    "host": lobby.host.name,
-                    "players": [player.name for player in lobby.players]
-                }
-            }))
+            self.sendLobby(lobby)
             for packet in lobby.packets:
                 self.sendMessage(json.dumps(packet))
         else:
@@ -103,19 +193,13 @@ class SimpleChat(WebSocket):
             "lobbyName": lobby.name,
             "playerCount": len(lobby.players),
             "maxCount": lobby.maxCount
-        } for lobby in lobbies if lobby.ingame == False]
+        } for lobby in lobbies.values() if lobby.ingame == False]
         self.sendMessage(json.dumps({
             "packetID": 2,
             "data": {
                 "lobbies": result
             }
         }))
-            
-    #Currently only used for chat
-    def proxy(self):
-        for client in clients:
-            client.sendMessage(json.dumps(data))
-        return True
     def handleMessage(self):
         try:
             print(self.address, self.data)
@@ -142,23 +226,23 @@ class SimpleChat(WebSocket):
                 if packetID == 1:
                     self.LoginHandler(payload)
                 else:
-                    error("Not logged in")
+                    self.error("Not logged in")
                 return
             # TODO: Cleanup this mess
             if self.user.lobbyID:
                 lobby = lobbies[self.user.lobbyID]
                 if lobby.ingame:
                     if packetID in self.ingameHandlers.keys():
-                        if self.ingameHandlers[packetID](payload):
+                        if self.ingameHandlers[packetID](self, payload):
                             lobby.packets.append(data)
                     else:
-                        error("Unknown ingame packet")
+                        self.error("Unknown ingame packet")
                 else:
                     if packetID in self.pregameHandlers.keys():
-                        if self.pregameHandlers[packetID](payload):
+                        if self.pregameHandlers[packetID](self, payload):
                             lobby.packets.append(data)
                     else:
-                        error("Unknown pregame packet")
+                        self.error("Unknown pregame packet")
             else:
                 if packetID in self.lobbyHandlers.keys():
                     try:
@@ -166,10 +250,10 @@ class SimpleChat(WebSocket):
                     except:
                         traceback.print_exc()
                 else:
-                    error("Unknown lobby packet")
+                    self.error("Unknown lobby packet")
         except:
             traceback.print_exc()
-            error(traceback.format_exc)
+            self.error(traceback.format_exc)
 
     def handleConnected(self):
         print(self.address, 'connected')
@@ -192,20 +276,22 @@ class SimpleChat(WebSocket):
             #    }
             #}))
     lobbyHandlers = {
-        5: CloseLobbyHandler,
         6: CreateLobbyHandler,
         7: JoinLobbyHandler
     }
     pregameHandlers = {
-        0: proxy
+        0: ChatHandler,
+        5: LeaveLobbyHandler,
+        9: LobbyStartHandler
     }
     ingameHandlers = {
         # TODO: Populate
+        0: ChatHandler,
     }
 
 clients = []
 users = {}
-lobbies = []
+lobbies = {}
 
 server = SimpleWebSocketServer('0.0.0.0', 8000, SimpleChat)
 server.serveforever()
