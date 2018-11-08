@@ -115,6 +115,7 @@ class SimpleChat(WebSocket):
     def LeaveLobbyHandler(self, data):
         lobby = lobbies[self.user.lobbyID]
         lobbyID = self.user.lobbyID      
+        # TODO: Check if this is last person in lobby in which case it should die anyway
         if lobby.host == self.user and lobby.ingame == False:
             # If the host has left the lobby during pregame, tell everyone its dead      
             print(f"Host left the lobby {lobbyID}")
@@ -297,6 +298,7 @@ class SimpleChat(WebSocket):
     }
     ingameHandlers = {
         0: ChatHandler,
+        5: LeaveLobbyHandler,
         10: lambda self,data: self.proxy(10,data) #PlayerRoll
     }
 
