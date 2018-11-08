@@ -164,21 +164,32 @@ class SimpleChat(WebSocket):
             player.client.sendLobby(lobby)
         return False
     def ChatHandler(self, data):
-        # TODO: Validate data
-        packet = {
-            "packetID": 0,
-            "data": {
-                "author": self.user.name,
-                "message": data["message"]
+        if "message" in data and type(data["message"]) == str:
+            packet = {
+                "packetID": 0,
+                "data": {
+                    "author": self.user.name,
+                    "message": data["message"]
+                }
             }
-        }
-        for client in clients:
-            client.sendMessage(json.dumps(packet))
-        lobby = lobbies[self.user.lobbyID]
+            for client in clients:
+                client.sendMessage(json.dumps(packet))
+            lobby = lobbies[self.user.lobbyID]
 
-        # Manually appending due to mutating packet server side
-        lobby.packets.append(packet)
+            # Manually appending due to mutating packet server side
+            lobby.packets.append(packet)
+        else:
+            self.error("Invalid message")
         return False
+    # Utilized by lambda functions below
+    def proxy(self, packetID, data):
+        lobby = lobbies[self.user.lobbyID]
+        for player in lobby.players:
+            player.client.sendMessage(json.dumps({
+                "packetID": packetID,
+                "data": data
+            }))
+        return True
     def playback(self):
         if self.user.lobbyID:
             lobby = lobbies[self.user.lobbyID]
@@ -285,8 +296,8 @@ class SimpleChat(WebSocket):
         9: LobbyStartHandler
     }
     ingameHandlers = {
-        # TODO: Populate
         0: ChatHandler,
+        10: lambda self,data: self.proxy(10,data) #PlayerRoll
     }
 
 clients = []
