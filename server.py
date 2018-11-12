@@ -166,16 +166,19 @@ class SimpleChat(WebSocket):
         return False
     def ChatHandler(self, data):
         if "message" in data and type(data["message"]) == str:
+            author = self.user.name
+            if "author" in data and type(data["author"]) == str:
+                author = ""
             packet = {
                 "packetID": 0,
                 "data": {
-                    "author": self.user.name,
+                    "author": author,
                     "message": data["message"]
                 }
             }
-            for client in clients:
-                client.sendMessage(json.dumps(packet))
             lobby = lobbies[self.user.lobbyID]
+            for player in lobby.players:
+                player.client.sendMessage(json.dumps(packet))
 
             # Manually appending due to mutating packet server side
             lobby.packets.append(packet)
@@ -195,8 +198,18 @@ class SimpleChat(WebSocket):
         if self.user.lobbyID:
             lobby = lobbies[self.user.lobbyID]
             self.sendLobby(lobby)
+            # StartPlayback
+            self.sendMessage(json.dumps({
+                "packetID": 253,
+                "data": {}
+            }))
             for packet in lobby.packets:
                 self.sendMessage(json.dumps(packet))
+            # EndPlayback
+            self.sendMessage(json.dumps({
+                "packetID": 254,
+                "data": {}
+            }))
         else:
             self.lobbylist()
     def lobbylist(self):
@@ -299,7 +312,16 @@ class SimpleChat(WebSocket):
     ingameHandlers = {
         0: ChatHandler,
         5: LeaveLobbyHandler,
-        10: lambda self,data: self.proxy(10,data) #PlayerRoll
+        10: lambda self,data: self.proxy(10,data), #TurnStart
+        11: lambda self,data: self.proxy(11,data), #PlayerRoll
+        12: lambda self,data: self.proxy(12,data), #PayBail
+        13: lambda self,data: self.proxy(13,data), #UseJailCard
+        14: lambda self,data: self.proxy(14,data), #PurchaseProperty
+        15: lambda self,data: self.proxy(15,data), #PayPerson
+        16: lambda self,data: self.proxy(16,data), #GainMoney
+        17: lambda self,data: self.proxy(17,data), #CardDraw
+        18: lambda self,data: self.proxy(18,data), #PurchaseProperty
+        19: lambda self,data: self.proxy(19,data) #PurchaseProperty
     }
 
 clients = []
